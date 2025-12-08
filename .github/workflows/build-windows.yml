@@ -3,33 +3,36 @@ name: Build ScreenPipe for Windows
 on:
   workflow_dispatch: # 允许手动触发
 
+# 定义全局环境变量，确保两个 Job 都能读取
+env:
+  VCPKG_ROOT: "C:\\vcpkg"
+  # 指定 Tauri 项目子目录
+  TAURI_DIR: "screenpipe-app-tauri" 
+
 jobs:
-  build:
+  # --- Job 1: 后端构建 (最耗时部分) ---
+  backend-build:
+    name: Build Rust Backend
     runs-on: windows-latest
+    outputs:
+      # 输出缓存 Key 以便下一个 Job 使用（可选优化）
+      cache-key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
     
-    env:
-      VCPKG_ROOT: "C:\\vcpkg"
-      
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Setup Bun (Frontend Runtime)
-        uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: latest
-
-      - name: Setup Rust (Backend Runtime)
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Setup Python (For OpenMP script)
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      # --- 缓存优化 ---
+      # 1. 缓存 vcpkg (避免重复编译 FFmpeg)
       - name: Restore vcpkg Cache
         id: vcpkg-cache
         uses: actions/cache@v3
@@ -44,72 +47,142 @@ jobs:
           .\vcpkg.exe install ffmpeg:x64-windows
           .\vcpkg.exe integrate install
 
-      - name: Set Environment Variables for Build
+      - name: Set Environment Variables
         run: |
           echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-windows\lib\pkgconfig" >> $env:GITHUB_ENV
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
-      # --- 修复后的第 6 步 ---
-      - name: Setup Intel OpenMP DLLs (Fixed)
+      # 2. 修复 OpenMP (你的原始脚本逻辑)
+      - name: Setup Intel OpenMP DLLs
         run: |
-          # 注意：这里不需要 cd screenpipe，我们已经在根目录了
-          
-          # 1. 定义目标目录 (相对路径)
-          $mkl_dir = "screenpipe-app-tauri\src-tauri\mkl"
+          # 确保目录存在
+          $mkl_dir = "${{ env.TAURI_DIR }}\src-tauri\mkl"
           if (-not (Test-Path $mkl_dir)) { New-Item -ItemType Directory -Force -Path $mkl_dir }
-
-          # 2. 安装 intel-openmp 到临时目录
-          $temp_dir = "temp_omp"
-          if (-not (Test-Path $temp_dir)) { New-Item -ItemType Directory -Force -Path $temp_dir }
           
+          $temp_dir = "temp_omp"
           pip install intel-openmp --target $temp_dir
-
-          # 3. 复制 DLL 文件
-          Write-Host "Copying DLL files..."
+          
           Get-ChildItem -Path $temp_dir -Recurse -Filter "*.dll" | ForEach-Object {
-              Write-Host "Copying $($_.Name)"
               Copy-Item $_.FullName -Destination $mkl_dir -Force
           }
-          
-          # 4. 清理
           Remove-Item -Path $temp_dir -Recurse -Force
 
-      # --- 修复后的第 7 步 ---
-      - name: Setup VC Redist (Fixed)
+      # 3. 修复 VC Redist
+      - name: Setup VC Redist
         run: |
-          # 同样不需要 cd screenpipe
-          
-          $vcredist_dir = "screenpipe-app-tauri\src-tauri\vcredist"
+          $vcredist_dir = "${{ env.TAURI_DIR }}\src-tauri\vcredist"
           if (-not (Test-Path $vcredist_dir)) { New-Item -ItemType Directory -Force -Path $vcredist_dir }
-          
-          # 尝试直接从系统获取 vcruntime140.dll (GitHub Runner 通常自带)
           $sys_path = "C:\Windows\System32\vcruntime140.dll"
-          
-          if (Test-Path $sys_path) {
-             Copy-Item $sys_path -Destination $vcredist_dir -Force
-             Write-Host "vcruntime140.dll copied successfully."
-          } else {
-             Write-Warning "vcruntime140.dll not found in System32. Skipping copy, build might rely on static link or system path."
-          }
+          if (Test-Path $sys_path) { Copy-Item $sys_path -Destination $vcredist_dir -Force }
 
-      # --- 修复后的构建步骤 ---
-      - name: Build Backend (Cargo)
+      # 4. === 核心修复：解决版本不匹配错误 ===
+      # 强制更新 Cargo.lock 中的依赖以匹配 package.json 中的新版本
+      - name: Fix Tauri Dependency Mismatch
         run: |
-          # 不需要 cd screenpipe，直接在根目录构建
+          cd ${{ env.TAURI_DIR }}/src-tauri
+          cargo update
+          # 或者针对特定包更新（如果上面命令不够）：
+          # cargo update -p tauri-plugin-http
+          # cargo update -p tauri-plugin-deep-link
+
+      # 5. 缓存 Rust 构建产物 (关键：让下一个 Job 复用编译结果)
+      - name: Cache Rust Target
+        uses: actions/cache@v3
+        id: cargo-target
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ env.TAURI_DIR }}/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # 6. 仅编译 Rust (不打包)
+      - name: Compile Backend Binary
+        run: |
+          cd ${{ env.TAURI_DIR }}/src-tauri
           cargo build --release
 
-      - name: Build Frontend & Bundle (Tauri)
+      # 7. 上传 DLL 和必要文件作为 Artifact (传递给下一个 Job)
+      # 虽然我们用了 Cache，但显式上传 DLL 更稳妥，防止 Cache 未命中
+      - name: Upload Backend Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-binaries
+          path: |
+            ${{ env.TAURI_DIR }}/src-tauri/target/release/*.exe
+            ${{ env.TAURI_DIR }}/src-tauri/target/release/*.dll
+            ${{ env.TAURI_DIR }}/src-tauri/mkl/*.dll
+            ${{ env.TAURI_DIR }}/src-tauri/vcredist/*.dll
+
+  # --- Job 2: 前端打包 (依赖 Job 1) ---
+  frontend-bundle:
+    name: Bundle Frontend & Installer
+    needs: backend-build # 只有后端成功才运行
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Setup Rust (Tauri 需要 Rust 环境来打包)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # 1. 恢复 Rust 构建缓存 (这就是"不从头开始"的关键)
+      - name: Restore Rust Target Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ env.TAURI_DIR }}/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # 2. 下载 DLLs 和 EXE (从上一个 Job)
+      - name: Download Backend Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-binaries
+          path: temp_artifacts
+
+      # 3. 将下载的文件归位
+      - name: Restore Artifacts to Correct Paths
         run: |
-          # 这里只需要进入子目录
-          cd screenpipe-app-tauri
+          # 移动 DLLs 到 mkl/vcredist
+          New-Item -ItemType Directory -Force -Path "${{ env.TAURI_DIR }}\src-tauri\mkl"
+          New-Item -ItemType Directory -Force -Path "${{ env.TAURI_DIR }}\src-tauri\vcredist"
+          
+          # 注意：这里的移动逻辑根据你实际产物位置调整
+          # 这里假设 backend-binaries 包含了所有需要的文件
+          Copy-Item "temp_artifacts\*.dll" -Destination "${{ env.TAURI_DIR }}\src-tauri\target\release\" -Force -ErrorAction SilentlyContinue
+          
+          # 此时 Rust 应该已经是编译好的状态，Tauri Build 会检测到
+
+      # 4. 再次运行版本修复 (因为是新的 Runner，需确保 Cargo.lock 状态一致)
+      - name: Ensure Cargo Versions Match
+        run: |
+          cd ${{ env.TAURI_DIR }}/src-tauri
+          cargo update
+
+      # 5. 构建前端并打包
+      - name: Build Frontend & Bundle
+        run: |
+          cd ${{ env.TAURI_DIR }}
           bun install
+          # 因为 Rust 已经编译过且 target 目录已恢复，这里只会进行链接和打包，速度很快
           bun tauri build
 
-      - name: Upload Installer Artifact
+      - name: Upload Installer
         uses: actions/upload-artifact@v4
         with:
           name: ScreenPipe-Installer
           path: |
-            screenpipe-app-tauri/src-tauri/target/release/bundle/msi/*.msi
-            screenpipe-app-tauri/src-tauri/target/release/bundle/nsis/*.exe
+            ${{ env.TAURI_DIR }}/src-tauri/target/release/bundle/msi/*.msi
+            ${{ env.TAURI_DIR }}/src-tauri/target/release/bundle/nsis/*.exe
