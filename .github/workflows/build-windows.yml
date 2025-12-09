@@ -63,13 +63,30 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('screenpipe-app-tauri/bun.lockb') }}
           restore-keys: bun-${{ runner.os }}-
 
-      # 如果 winget 没缓存到，才去装（第一次或者你改了依赖时才会走这里）
+      # 安装 Visual Studio BuildTools（必须每次都检查，因为缓存可能不完整）
+      - name: Setup Visual Studio BuildTools
+        run: |
+          $vsPath = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vsPath)) {
+            Write-Host "Installing Visual Studio BuildTools..."
+            winget source reset --force
+            winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
+          } else {
+            Write-Host "Visual Studio BuildTools already installed"
+          }
+
+      # 如果 winget 没缓存到，才去装其他工具
       - name: Install tools via winget (only when cache miss)
         if: steps.cache-winget.outputs.cache-hit != 'true'
         run: |
           winget source reset --force
-          winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
-          winget install -e --id Rustlang.Rustup,LLVM.LLVM,Kitware.CMake,GnuWin32.UnZip,Git.Git,JernejSimoncic.Wget,7zip.7zip --accept-package-agreements --accept-source-agreements
+          winget install -e --id Rustlang.Rustup
+          inget install -e --id LLVM.LLVM
+          inget install -e --id Kitware.CMake
+          inget install -e --id GnuWin32.UnZip
+          inget install -e --id Git.Git
+          inget install -e --id JernejSimoncic.Wget
+          inget install -e --id 7zip.7zip
 
       # 安装 Bun（如果没缓存到也会重新装，但很快）
       - name: Install Bun
@@ -79,11 +96,12 @@ jobs:
       - name: Setup vcpkg (only when cache miss)
         if: steps.cache-vcpkg.outputs.cache-hit != 'true'
         run: |
+          if (Test-Path C:\vcpkg) { Remove-Item -Recurse -Force C:\vcpkg }
           New-Item -ItemType Directory -Force -Path C:\vcpkg | Out-Null
-          cd C:\vcpkg
+          Set-Location C:\vcpkg
           git clone https://github.com/microsoft/vcpkg.git .
           .\bootstrap-vcpkg.bat -disableMetrics
-          .\vcpkg.exe integrate install
+          .\vcpkg.exe integrate install --disable-metrics
           .\vcpkg.exe install ffmpeg:x64-windows --triplet x64-windows
 
       # 环境变量（缓存命中后这些路径都还在，直接用就行）
