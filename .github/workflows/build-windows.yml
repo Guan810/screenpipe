@@ -3,6 +3,7 @@ name: Build Windows Release
 on:
   workflow_dispatch: # 手动触发
   push:
+    branches: [main] # 添加：push 到 main 分支时自动触发（可根据实际分支调整）
     tags:
       - "v*" # 推送 tag 时自动构建（如 v0.1.0）
 
@@ -11,7 +12,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        shell: pwsh # 全部使用 PowerShell Core（推荐）
+        shell: pwsh # 全部使用 PowerShell Core
 
     steps:
       # 1. Checkout 代码
@@ -20,22 +21,25 @@ jobs:
         with:
           submodules: recursive
 
-      # 2. 安装 winget（windows-latest 已经自带，但保险起见显式更新）
-      - name: Update winget
+      # 2. 重置并升级 winget 源（修复错误）
+      - name: Reset and upgrade winget sources
         run: |
-          winget upgrade --id Microsoft.Winget.Source_8wekyb3d8bbwe --accept-package-agreements --accept-source-agreements
+          Write-Host "Resetting winget sources..."
+          winget source reset --force
+          Write-Host "Upgrading all winget sources and packages..."
+          winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements --force
 
       # 3. 安装所有必需工具（并行安装，节省时间）
       - name: Install required tools via winget
         run: |
-          winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.20348 --includeRecommended" --accept-package-agreements --accept-source-agreements
-          winget install -e --id Rustlang.Rustup --accept-package-agreements --accept-source-agreements
-          winget install -e --id LLVM.LLVM --accept-package-agreements --accept-source-agreements
-          winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements
-          winget install -e --id GnuWin32.UnZip --accept-package-agreements --accept-source-agreements
-          winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements
-          winget install -e --id JernejSimoncic.Wget --accept-package-agreements --accept-source-agreements
-          winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements
+          winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.20348 --includeRecommended" --accept-package-agreements --accept-source-agreements --force
+          winget install -e --id Rustlang.Rustup --accept-package-agreements --accept-source-agreements --force
+          winget install -e --id LLVM.LLVM --accept-package-agreements --accept-source-agreements --force
+          winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements --force
+          winget install -e --id GnuWin32.UnZip --accept-package-agreements --accept-source-agreements --force
+          winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements --force
+          winget install -e --id JernejSimoncic.Wget --accept-package-agreements --accept-source-agreements --force
+          winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements --force
 
       # 4. 安装 Bun（官方 PowerShell 一行安装）
       - name: Install Bun
@@ -44,8 +48,8 @@ jobs:
       # 5. 设置 vcpkg（在 C:\vcpkg，避免路径太长）
       - name: Setup vcpkg
         run: |
-          mkdir C:\vcpkg
-          cd C:\vcpkg
+          New-Item -ItemType Directory -Force -Path C:\vcpkg | Out-Null
+          Set-Location C:\vcpkg
           git clone https://github.com/microsoft/vcpkg.git .
           .\bootstrap-vcpkg.bat -disableMetrics
           .\vcpkg.exe integrate install --disable-metrics
@@ -57,7 +61,8 @@ jobs:
           echo "VCPKG_ROOT=C:\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-windows\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "C:\Program Files (x86)\GnuWin32\bin" >> $env:GITHUB_PATH
+          echo "C:\Program Files (x86)\GnuWin32\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
 
       # 7. 安装 Intel OpenMP DLLs（复制到项目中）
       - name: Install Intel OpenMP DLLs
@@ -73,8 +78,10 @@ jobs:
 
           Get-ChildItem -Path $temp_dir -Recurse -Filter "*.dll" | ForEach-Object {
               Copy-Item $_.FullName -Destination $mkl_dir -Force
+              Write-Host "Copied: $($_.FullName)"
           }
           Remove-Item -Path $temp_dir -Recurse -Force
+          Write-Host "Intel OpenMP DLLs installed successfully."
 
       # 8. 确保 VCRuntime 已安装并复制 vcruntime140.dll
       - name: Ensure VCRuntime and copy vcruntime140.dll
@@ -82,14 +89,17 @@ jobs:
           $dll = "C:\Windows\System32\vcruntime140.dll"
           if (-Not (Test-Path $dll)) {
               Write-Host "vcruntime140.dll not found, installing Visual C++ Redistributable..."
-              Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "$env:TEMP\vc_redist.x64.exe"
-              Start-Process -FilePath "$env:TEMP\vc_redist.x64.exe" -ArgumentList "/install /quiet /norestart" -Wait
+              $vcUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+              $vcPath = "$env:TEMP\vc_redist.x64.exe"
+              Invoke-WebRequest -Uri $vcUrl -OutFile $vcPath
+              Start-Process -FilePath $vcPath -ArgumentList "/install /quiet /norestart" -Wait -NoNewWindow
+              Remove-Item $vcPath -Force
           }
 
           $target = Join-Path (Get-Location) "screenpipe-app-tauri\src-tauri\vcredist"
-          New-Item -ItemType Directory -Force -Path $target
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
           Copy-Item $dll -Destination $target -Force
-          Write-Host "vcruntime140.dll copied!"
+          Write-Host "vcruntime140.dll copied to $target"
 
       # 9. 安装 Rust toolchain（默认安装 stable-x86_64-pc-windows-msvc）
       - name: Install Rust
@@ -120,7 +130,7 @@ jobs:
       # 12. 构建 Tauri 前端 + 打包
       - name: Bun install & Tauri build
         run: |
-          cd screenpipe-app-tauri
+          Set-Location screenpipe-app-tauri
           bun install --frozen-lockfile
           bun tauri build
 
