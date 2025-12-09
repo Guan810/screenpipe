@@ -20,14 +20,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Cache vcpkg
-        id: cache-vcpkg
-        uses: actions/cache@v4
-        with:
-          path: C:\dev\vcpkg
-          key: vcpkg-ffmpeg-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: vcpkg-ffmpeg-${{ runner.os }}-
-
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -82,22 +74,8 @@ jobs:
           irm https://bun.sh/install.ps1 | iex
           echo "$env:USERPROFILE\.bun\bin" >> $env:GITHUB_PATH
 
-      - name: Setup vcpkg
-        continue-on-error: true
-        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
-        run: |
-          New-Item -ItemType Directory -Force -Path C:\dev | Out-Null
-          cd C:\dev
-          git clone https://github.com/microsoft/vcpkg.git
-          cd vcpkg
-          .\bootstrap-vcpkg.bat -disableMetrics
-          .\vcpkg.exe integrate install --disable-metrics
-          .\vcpkg.exe install ffmpeg:x64-windows
-
       - name: Set environment variables
         run: |
-          echo "PKG_CONFIG_PATH=C:\dev\vcpkg\packages\ffmpeg_x64-windows\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "VCPKG_ROOT=C:\dev\vcpkg" >> $env:GITHUB_ENV
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
           echo "C:\Program Files (x86)\GnuWin32\bin" >> $env:GITHUB_PATH
 
