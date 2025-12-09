@@ -1,117 +1,50 @@
 name: Build Windows Release
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
   push:
-    branches: [main] # 添加：push 到 main 分支时自动触发（可根据实际分支调整）
-    tags:
-      - "v*" # 推送 tag 时自动构建（如 v0.1.0）
+    branches: [main] # 根据你的主分支改
+    tags: ["v*"]
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 120
     defaults:
       run:
-        shell: pwsh # 全部使用 PowerShell Core
+        shell: pwsh
 
     steps:
-      # 1. Checkout 代码
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # 2. 重置并升级 winget 源（修复错误）
-      - name: Reset and upgrade winget sources
-        run: |
-          Write-Host "Resetting winget sources..."
-          winget source reset --force
-          Write-Host "Upgrading all winget sources and packages..."
-          winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements --force
-
-      # 3. 安装所有必需工具（并行安装，节省时间）
-      - name: Install required tools via winget
-        run: |
-          winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.20348 --includeRecommended" --accept-package-agreements --accept-source-agreements --force
-          winget install -e --id Rustlang.Rustup --accept-package-agreements --accept-source-agreements --force
-          winget install -e --id LLVM.LLVM --accept-package-agreements --accept-source-agreements --force
-          winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements --force
-          winget install -e --id GnuWin32.UnZip --accept-package-agreements --accept-source-agreements --force
-          winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements --force
-          winget install -e --id JernejSimoncic.Wget --accept-package-agreements --accept-source-agreements --force
-          winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements --force
-
-      # 4. 安装 Bun（官方 PowerShell 一行安装）
-      - name: Install Bun
-        run: iwr https://bun.sh/install.ps1 -useb | iex
-
-      # 5. 设置 vcpkg（在 C:\vcpkg，避免路径太长）
-      - name: Setup vcpkg
-        run: |
-          New-Item -ItemType Directory -Force -Path C:\vcpkg | Out-Null
-          Set-Location C:\vcpkg
-          git clone https://github.com/microsoft/vcpkg.git .
-          .\bootstrap-vcpkg.bat -disableMetrics
-          .\vcpkg.exe integrate install --disable-metrics
-          .\vcpkg.exe install ffmpeg:x64-windows --triplet x64-windows
-
-      # 6. 设置持久化环境变量（对后续步骤有效）
-      - name: Set environment variables
-        run: |
-          echo "VCPKG_ROOT=C:\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-windows\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "C:\Program Files (x86)\GnuWin32\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        shell: pwsh
-
-      # 7. 安装 Intel OpenMP DLLs（复制到项目中）
-      - name: Install Intel OpenMP DLLs
-        run: |
-          python -m pip install --upgrade pip
-          $mkl_dir = Join-Path (Get-Location) "screenpipe-app-tauri\src-tauri\mkl"
-          New-Item -ItemType Directory -Force -Path $mkl_dir | Out-Null
-
-          $temp_dir = "temp_openmp"
-          New-Item -ItemType Directory -Force -Path $temp_dir | Out-Null
-
-          python -m pip install intel-openmp --target $temp_dir
-
-          Get-ChildItem -Path $temp_dir -Recurse -Filter "*.dll" | ForEach-Object {
-              Copy-Item $_.FullName -Destination $mkl_dir -Force
-              Write-Host "Copied: $($_.FullName)"
-          }
-          Remove-Item -Path $temp_dir -Recurse -Force
-          Write-Host "Intel OpenMP DLLs installed successfully."
-
-      # 8. 确保 VCRuntime 已安装并复制 vcruntime140.dll
-      - name: Ensure VCRuntime and copy vcruntime140.dll
-        run: |
-          $dll = "C:\Windows\System32\vcruntime140.dll"
-          if (-Not (Test-Path $dll)) {
-              Write-Host "vcruntime140.dll not found, installing Visual C++ Redistributable..."
-              $vcUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
-              $vcPath = "$env:TEMP\vc_redist.x64.exe"
-              Invoke-WebRequest -Uri $vcUrl -OutFile $vcPath
-              Start-Process -FilePath $vcPath -ArgumentList "/install /quiet /norestart" -Wait -NoNewWindow
-              Remove-Item $vcPath -Force
-          }
-
-          $target = Join-Path (Get-Location) "screenpipe-app-tauri\src-tauri\vcredist"
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
-          Copy-Item $dll -Destination $target -Force
-          Write-Host "vcruntime140.dll copied to $target"
-
-      # 9. 安装 Rust toolchain（默认安装 stable-x86_64-pc-windows-msvc）
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
+      # 1. 【超级缓存1】缓存整个 winget 安装的程序（最重的一块！）
+      - name: Cache winget packages
+        id: cache-winget
+        uses: actions/cache@v4
         with:
-          toolchain: stable
-          target: x86_64-pc-windows-msvc
-          override: true
-          components: rustfmt, clippy
+          path: |
+            C:\Program Files\*
+            C:\Program Files (x86)\*
+            C:\Users\runneradmin\AppData\Local\Microsoft\WinGet\
+          key: winget-2022-${{ hashFiles('.github/workflows/windows.yml') }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            winget-2022-
 
-      # 10. 缓存 cargo 依赖（大幅提速）
-      - name: Cache cargo registry & build
+      # 2. 【超级缓存2】缓存 vcpkg 整个目录（包含已编译的 ffmpeg）
+      - name: Cache vcpkg (including built ffmpeg)
+        id: cache-vcpkg
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg
+          key: vcpkg-ffmpeg-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            vcpkg-ffmpeg-
+
+      # 3. 【超级缓存3】缓存 cargo（registry + git + target）
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
@@ -122,24 +55,83 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # 11. 构建 screenpipe（Rust 部分）
-      - name: Cargo build --release
-        run: |
-          cargo build --release --locked
+      # 4. 【超级缓存4】缓存 Bun store（bun install 也会很快）
+      - name: Cache Bun
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Bun
+          key: bun-${{ runner.os }}-${{ hashFiles('screenpipe-app-tauri/bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
 
-      # 12. 构建 Tauri 前端 + 打包
-      - name: Bun install & Tauri build
+      # 如果 winget 没缓存到，才去装（第一次或者你改了依赖时才会走这里）
+      - name: Install tools via winget (only when cache miss)
+        if: steps.cache-winget.outputs.cache-hit != 'true'
         run: |
-          Set-Location screenpipe-app-tauri
+          winget source reset --force
+          winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
+          winget install -e --id Rustlang.Rustup,LLVM.LLVM,Kitware.CMake,GnuWin32.UnZip,Git.Git,JernejSimoncic.Wget,7zip.7zip --accept-package-agreements --accept-source-agreements
+
+      # 安装 Bun（如果没缓存到也会重新装，但很快）
+      - name: Install Bun
+        run: iwr https://bun.sh/install.ps1 -useb | iex
+
+      # vcpkg：如果缓存没命中才重新 bootstrap 和编译 ffmpeg
+      - name: Setup vcpkg (only when cache miss)
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\vcpkg | Out-Null
+          cd C:\vcpkg
+          git clone https://github.com/microsoft/vcpkg.git .
+          .\bootstrap-vcpkg.bat -disableMetrics
+          .\vcpkg.exe integrate install
+          .\vcpkg.exe install ffmpeg:x64-windows --triplet x64-windows
+
+      # 环境变量（缓存命中后这些路径都还在，直接用就行）
+      - name: Set environment variables
+        run: |
+          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-windows\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          echo "C:\Program Files (x86)\GnuWin32\bin" >> $env:GITHUB_PATH
+
+      # 下面这些基本秒过，即使失败重跑也几乎不耗时
+      - name: Install Intel OpenMP DLLs
+        run: |
+          python -m pip install --upgrade pip
+          $mkl = Resolve-Path "screenpipe-app-tauri\src-tauri\mkl" -ErrorAction SilentlyContinue
+          if (-not $mkl) { New-Item -ItemType Directory -Force -Path "screenpipe-app-tauri\src-tauri\mkl" }
+          $temp = "tmp_openmp"
+          New-Item -ItemType Directory -Force -Path $temp
+          python -m pip install intel-openmp --target $temp --no-cache-dir
+          Copy-Item "$temp\*.dll" "screenpipe-app-tauri\src-tauri\mkl\" -Force
+          Remove-Item $temp -Recurse -Force
+
+      - name: Copy vcruntime140.dll
+        run: |
+          $src = "C:\Windows\System32\vcruntime140.dll"
+          $dst = "screenpipe-app-tauri\src-tauri\vcredist"
+          New-Item -ItemType Directory -Force -Path $dst
+          Copy-Item $src -Destination $dst -Force
+
+      - name: Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Cargo build --release
+        run: cargo build --release --locked
+
+      - name: Tauri build
+        run: |
+          cd screenpipe-app-tauri
           bun install --frozen-lockfile
           bun tauri build
 
-      # 13. 上传生成的安装包（通常在 src-tauri/target/release/bundle/ 下）
-      - name: Upload Windows installer
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: screenpipe-windows-installer
+          name: screenpipe-windows
           path: |
             screenpipe-app-tauri/src-tauri/target/release/bundle/msi/*.msi
             screenpipe-app-tauri/src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: error
