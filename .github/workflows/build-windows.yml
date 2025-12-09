@@ -45,18 +45,37 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('screenpipe-app-tauri/bun.lockb') }}
           restore-keys: bun-${{ runner.os }}-
 
-      - name: Install required tools
-        run: |
-          $ErrorActionPreference = 'Continue'
-          winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
-          winget install -e --id Rustlang.Rustup --accept-package-agreements --accept-source-agreements
-          winget install -e --id LLVM.LLVM --accept-package-agreements --accept-source-agreements
-          winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements
-          winget install -e --id GnuWin32.UnZip --accept-package-agreements --accept-source-agreements
-          winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements
-          winget install -e --id JernejSimoncic.Wget --accept-package-agreements --accept-source-agreements
-          winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements
-          $ErrorActionPreference = 'Stop'
+      - name: Install Visual Studio BuildTools
+        continue-on-error: true
+        run: winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
+
+      - name: Install Rust
+        continue-on-error: true
+        run: winget install -e --id Rustlang.Rustup --accept-package-agreements --accept-source-agreements
+
+      - name: Install LLVM
+        continue-on-error: true
+        run: winget install -e --id LLVM.LLVM --accept-package-agreements --accept-source-agreements
+
+      - name: Install CMake
+        continue-on-error: true
+        run: winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements
+
+      - name: Install UnZip
+        continue-on-error: true
+        run: winget install -e --id GnuWin32.UnZip --accept-package-agreements --accept-source-agreements
+
+      - name: Install Git
+        continue-on-error: true
+        run: winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements
+
+      - name: Install Wget
+        continue-on-error: true
+        run: winget install -e --id JernejSimoncic.Wget --accept-package-agreements --accept-source-agreements
+
+      - name: Install 7zip
+        continue-on-error: true
+        run: winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements
 
       - name: Install Bun
         run: irm https://bun.sh/install.ps1 | iex
