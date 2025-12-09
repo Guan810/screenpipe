@@ -78,9 +78,12 @@ jobs:
         run: winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements
 
       - name: Install Bun
-        run: irm https://bun.sh/install.ps1 | iex
+        run: |
+          irm https://bun.sh/install.ps1 | iex
+          echo "$env:USERPROFILE\.bun\bin" >> $env:GITHUB_PATH
 
       - name: Setup vcpkg
+        continue-on-error: true
         if: steps.cache-vcpkg.outputs.cache-hit != 'true'
         run: |
           New-Item -ItemType Directory -Force -Path C:\dev | Out-Null
