@@ -114,9 +114,6 @@ jobs:
         run: cargo build --release
 
       - name: Build Tauri app
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           cd screenpipe-app-tauri
           bun install
