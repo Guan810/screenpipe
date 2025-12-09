@@ -3,7 +3,7 @@ name: Build Windows Release
 on:
   workflow_dispatch:
   push:
-    branches: [main] # 根据你的主分支改
+    branches: [main]
     tags: ["v*"]
 
 jobs:
@@ -20,42 +20,24 @@ jobs:
         with:
           submodules: recursive
 
-      # 1. 【超级缓存1】缓存整个 winget 安装的程序（最重的一块！）
-      - name: Cache winget packages
-        id: cache-winget
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:\Program Files\*
-            C:\Program Files (x86)\*
-            C:\Users\runneradmin\AppData\Local\Microsoft\WinGet\
-          key: winget-2022-${{ hashFiles('.github/workflows/windows.yml') }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            winget-2022-
-
-      # 2. 【超级缓存2】缓存 vcpkg 整个目录（包含已编译的 ffmpeg）
-      - name: Cache vcpkg (including built ffmpeg)
+      - name: Cache vcpkg
         id: cache-vcpkg
         uses: actions/cache@v4
         with:
-          path: C:\vcpkg
-          key: vcpkg-ffmpeg-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            vcpkg-ffmpeg-
+          path: C:\dev\vcpkg
+          key: vcpkg-ffmpeg-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: vcpkg-ffmpeg-${{ runner.os }}-
 
-      # 3. 【超级缓存3】缓存 cargo（registry + git + target）
       - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
-            ~\AppData\Local\cargo\registry
-            ~\AppData\Local\cargo\git
+            ~\.cargo\registry
+            ~\.cargo\git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          restore-keys: ${{ runner.os }}-cargo-
 
-      # 4. 【超级缓存4】缓存 Bun store（bun install 也会很快）
       - name: Cache Bun
         uses: actions/cache@v4
         with:
@@ -63,87 +45,76 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('screenpipe-app-tauri/bun.lockb') }}
           restore-keys: bun-${{ runner.os }}-
 
-      # 安装 Visual Studio BuildTools（必须每次都检查，因为缓存可能不完整）
-      - name: Setup Visual Studio BuildTools
+      - name: Install required tools
         run: |
-          $vsPath = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
-          if (-not (Test-Path $vsPath)) {
-            Write-Host "Installing Visual Studio BuildTools..."
-            winget source reset --force
-            winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
-          } else {
-            Write-Host "Visual Studio BuildTools already installed"
-          }
+          winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
+          winget install -e --id Rustlang.Rustup --accept-package-agreements --accept-source-agreements
+          winget install -e --id LLVM.LLVM --accept-package-agreements --accept-source-agreements
+          winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements
+          winget install -e --id GnuWin32.UnZip --accept-package-agreements --accept-source-agreements
+          winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements
+          winget install -e --id JernejSimoncic.Wget --accept-package-agreements --accept-source-agreements
+          winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements
 
-      # 如果 winget 没缓存到，才去装其他工具
-      - name: Install tools via winget (only when cache miss)
-        if: steps.cache-winget.outputs.cache-hit != 'true'
-        run: |
-          winget source reset --force
-          winget install -e --id Rustlang.Rustup
-          inget install -e --id LLVM.LLVM
-          inget install -e --id Kitware.CMake
-          inget install -e --id GnuWin32.UnZip
-          inget install -e --id Git.Git
-          inget install -e --id JernejSimoncic.Wget
-          inget install -e --id 7zip.7zip
-
-      # 安装 Bun（如果没缓存到也会重新装，但很快）
       - name: Install Bun
-        run: iwr https://bun.sh/install.ps1 -useb | iex
+        run: irm https://bun.sh/install.ps1 | iex
 
-      # vcpkg：如果缓存没命中才重新 bootstrap 和编译 ffmpeg
-      - name: Setup vcpkg (only when cache miss)
+      - name: Setup vcpkg
         if: steps.cache-vcpkg.outputs.cache-hit != 'true'
         run: |
-          if (Test-Path C:\vcpkg) { Remove-Item -Recurse -Force C:\vcpkg }
-          New-Item -ItemType Directory -Force -Path C:\vcpkg | Out-Null
-          Set-Location C:\vcpkg
-          git clone https://github.com/microsoft/vcpkg.git .
+          New-Item -ItemType Directory -Force -Path C:\dev | Out-Null
+          cd C:\dev
+          git clone https://github.com/microsoft/vcpkg.git
+          cd vcpkg
           .\bootstrap-vcpkg.bat -disableMetrics
           .\vcpkg.exe integrate install --disable-metrics
-          .\vcpkg.exe install ffmpeg:x64-windows --triplet x64-windows
+          .\vcpkg.exe install ffmpeg:x64-windows
 
-      # 环境变量（缓存命中后这些路径都还在，直接用就行）
       - name: Set environment variables
         run: |
-          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
-          echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-windows\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_PATH=C:\dev\vcpkg\packages\ffmpeg_x64-windows\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "VCPKG_ROOT=C:\dev\vcpkg" >> $env:GITHUB_ENV
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
           echo "C:\Program Files (x86)\GnuWin32\bin" >> $env:GITHUB_PATH
 
-      # 下面这些基本秒过，即使失败重跑也几乎不耗时
-      - name: Install Intel OpenMP DLLs
+      - name: Setup Intel OpenMP DLLs
         run: |
+          $mkl_dir = "${{ github.workspace }}\screenpipe-app-tauri\src-tauri\mkl"
+          New-Item -ItemType Directory -Force -Path $mkl_dir | Out-Null
           python -m pip install --upgrade pip
-          $mkl = Resolve-Path "screenpipe-app-tauri\src-tauri\mkl" -ErrorAction SilentlyContinue
-          if (-not $mkl) { New-Item -ItemType Directory -Force -Path "screenpipe-app-tauri\src-tauri\mkl" }
-          $temp = "tmp_openmp"
-          New-Item -ItemType Directory -Force -Path $temp
-          python -m pip install intel-openmp --target $temp --no-cache-dir
-          Copy-Item "$temp\*.dll" "screenpipe-app-tauri\src-tauri\mkl\" -Force
-          Remove-Item $temp -Recurse -Force
+          $temp_dir = "temp_omp"
+          New-Item -ItemType Directory -Force -Path $temp_dir | Out-Null
+          Write-Host "Installing Intel OpenMP..."
+          python -m pip install intel-openmp --target $temp_dir
+          Write-Host "Copying DLL files..."
+          Get-ChildItem -Path $temp_dir -Recurse -Filter "*.dll" | ForEach-Object {
+              Write-Host "Copying $_"
+              Copy-Item $_.FullName -Destination $mkl_dir -Force
+          }
+          Remove-Item -Path $temp_dir -Recurse -Force
 
-      - name: Copy vcruntime140.dll
+      - name: Setup vcredist
         run: |
-          $src = "C:\Windows\System32\vcruntime140.dll"
-          $dst = "screenpipe-app-tauri\src-tauri\vcredist"
-          New-Item -ItemType Directory -Force -Path $dst
-          Copy-Item $src -Destination $dst -Force
+          $path = "C:\Windows\System32\vcruntime140.dll"
+          if (-Not (Test-Path $path)) {
+              Write-Host "vcruntime140.dll not found, installing vcredist..."
+              $url = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+              $installer = "$env:TEMP\vc_redist.x64.exe"
+              Invoke-WebRequest -Uri $url -OutFile $installer
+              Start-Process -FilePath $installer -Args '/install /quiet /norestart' -Wait
+          }
+          $vcredist_dir = "${{ github.workspace }}\screenpipe-app-tauri\src-tauri\vcredist"
+          New-Item -ItemType Directory -Force -Path $vcredist_dir | Out-Null
+          Copy-Item $path -Destination $vcredist_dir -Force
+          Write-Host "vcruntime140.dll copied successfully!"
 
-      - name: Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+      - name: Build screenpipe
+        run: cargo build --release
 
-      - name: Cargo build --release
-        run: cargo build --release --locked
-
-      - name: Tauri build
+      - name: Build Tauri app
         run: |
           cd screenpipe-app-tauri
-          bun install --frozen-lockfile
+          bun install
           bun tauri build
 
       - name: Upload artifacts
@@ -151,5 +122,5 @@ jobs:
         with:
           name: screenpipe-windows
           path: |
-            screenpipe-app-tauri/src-tauri/target/release/bundle/msi/*.msi
-            screenpipe-app-tauri/src-tauri/target/release/bundle/nsis/*.exe
+            screenpipe-app-tauri\src-tauri\target\release\bundle\msi\*.msi
+            screenpipe-app-tauri\src-tauri\target\release\bundle\nsis\*.exe
