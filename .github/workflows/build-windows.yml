@@ -47,6 +47,7 @@ jobs:
 
       - name: Install required tools
         run: |
+          $ErrorActionPreference = 'Continue'
           winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
           winget install -e --id Rustlang.Rustup --accept-package-agreements --accept-source-agreements
           winget install -e --id LLVM.LLVM --accept-package-agreements --accept-source-agreements
@@ -55,6 +56,7 @@ jobs:
           winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements
           winget install -e --id JernejSimoncic.Wget --accept-package-agreements --accept-source-agreements
           winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements
+          $ErrorActionPreference = 'Stop'
 
       - name: Install Bun
         run: irm https://bun.sh/install.ps1 | iex
